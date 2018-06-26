@@ -1,0 +1,64 @@
+resources:
+- name: monitor
+  type: compute.v1.instance
+  properties:
+    disks:
+      - deviceName: boot
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          sourceImage: projects/debian-cloud/global/images/family/debian-9
+          diskSizeGb: 50
+    machineType: zones/{{ properties["zone"] }}/machineTypes/{{ properties["machineType"] }}
+    metadata:
+      items:
+      - key: startup-script
+        value: |
+          #!/bin/bash
+          apt-get update
+          apt-get install -y apt-transport-https
+          curl -sL https://packagecloud.io/gpg.key | apt-key add -
+          echo "deb https://packagecloud.io/grafana/stable/debian/ stretch main" > /etc/apt/sources.list.d/grafana.list
+          apt-get update
+          apt-get install -y apache2-utils influxdb influxdb-client grafana collectd
+          cat <<< '[meta]
+          dir = "/var/lib/influxdb/meta"
+          [data]
+          dir = "/var/lib/influxdb/data"
+          wal-dir = "/var/lib/influxdb/wal"
+          [[collectd]]
+          enabled = true 
+          bind-address = "0.0.0.0:25826"
+          database = "collectd"
+          retention-policy = ""
+          typesdb = "/usr/share/collectd/types.db"
+          batch-size = 5000
+          batch-pending = 10
+          batch-timeout = "10s"
+          read-buffer = 0
+          parse-multivalue-plugin = "split"
+          ' > /etc/influxdb/influxdb.conf
+          gsutil cp gs://apigee-load-testing/datasource.yaml /etc/grafana/provisioning/datasources/datasource.yaml
+          gsutil cp gs://apigee-load-testing/dashboard.yaml /etc/grafana/provisioning/dashboards/dashboard.yaml
+          mkdir /var/lib/grafana/dashboards
+          gsutil cp gs://apigee-load-testing/k6-load-testing-results.json /var/lib/grafana/dashboards/k6-load-testing-results.json
+          gsutil cp gs://apigee-load-testing/system-status.json /var/lib/grafana/dashboards/system-status.json
+          gcloud beta runtime-config configs waiters create collectd-waiter --config-name {{ properties["config" ]}} --success-cardinality-path /success-collectd --success-cardinality-number 1 --timeout 600
+          systemctl enable influxdb.service
+          systemctl enable grafana-server.service
+          systemctl start influxdb
+          systemctl daemon-reload
+          systemctl start grafana-server
+    networkInterfaces:
+    - network: projects/{{ env["project"] }}/global/networks/default
+      # Access Config required to give the instance a public IP address
+      accessConfigs:
+      - name: External NAT
+        type: ONE_TO_ONE_NAT
+    serviceAccounts:
+    - email: default
+      scopes:
+      - https://www.googleapis.com/auth/cloud-platform
+      - https://www.googleapis.com/auth/devstorage.read_only
+    zone: {{ properties["zone"] }}

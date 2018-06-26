@@ -1,0 +1,48 @@
+imports:
+- path: config.jinja
+- path: monitor.jinja
+- path: target.jinja
+- path: microgateway.jinja
+- path: load-generator.jinja
+
+resources:
+- name: mgw-load-test-config
+  type: config.jinja
+  properties:
+    config: mgw-load-test-config
+- name: target
+  type: target.jinja
+  properties:
+    image: debian-9
+    diskSizeInGb: 10
+    machineType: n1-standard-4
+    zone: europe-west1-b
+- name: microgateway
+  type: microgateway.jinja
+  properties:
+    image: debian-9
+    diskSizeInGb: 10
+    machineType: n1-standard-4
+    zone: europe-west1-b
+    credentialsFile: gs://apigee-load-testing/apigee-credentials.txt.enc
+    organization: apigeetraining2018-eval
+    environment: test
+    keyring: apigee
+    key: apigee
+    config: mgw-load-test-config
+- name: load-generator
+  type: load-generator.jinja
+  properties:
+    image: debian-9
+    diskSizeInGb: 10
+    machineType: n1-standard-4
+    zone: europe-west1-b
+    config: mgw-load-test-config
+- name: monitor
+  type: monitor.jinja
+  properties:
+    image: debian-9
+    diskSizeInGb: 50
+    machineType: n1-standard-4
+    zone: europe-west1-b   
+    config: mgw-load-test-config 

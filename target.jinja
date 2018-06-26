@@ -1,0 +1,43 @@
+resources:
+- name: target
+  type: compute.v1.instance
+  properties:
+    disks:
+      - deviceName: boot
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          sourceImage: projects/debian-cloud/global/images/family/debian-9
+          diskSizeGb: 10
+    machineType: zones/{{ properties["zone"] }}/machineTypes/{{ properties["machineType"] }}
+    metadata:
+      items:
+      - key: startup-script
+        value: |
+          #!/bin/bash
+          curl -sL https://deb.nodesource.com/setup_8.x | sudo -E bash -
+          apt-get install -y nodejs
+          npm install -g pm2
+          mkdir app
+          cd app
+          npm init -y
+          npm install --save express
+          cat <<< "const express = require('express');
+          const app = express();
+          app.get('/', function (req, res) {
+              res.send('Hello World!');
+          });
+          app.listen(80, function () {
+              console.log('Example app listening on port 80!');
+          });" > index.js
+          pm2 start index.js
+          pm2 startup
+          pm2 save
+    networkInterfaces:
+    - network: projects/{{ env["project"] }}/global/networks/default
+      # Access Config required to give the instance a public IP address
+      accessConfigs:
+      - name: External NAT
+        type: ONE_TO_ONE_NAT
+    zone: {{ properties["zone"] }}

@@ -1,0 +1,65 @@
+resources:
+- name: load-generator
+  type: compute.v1.instance
+  properties:
+    disks:
+      - deviceName: boot
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          sourceImage: projects/debian-cloud/global/images/family/debian-9
+          diskSizeGb: 50
+    machineType: zones/{{ properties["zone"] }}/machineTypes/{{ properties["machineType"] }}
+    metadata:
+      items:
+      - key: startup-script
+        value: |
+          #!/bin/bash
+          gcloud components update -q
+          gcloud components install beta -q
+          apt-get update
+          apt-get install -y apt-transport-https
+          apt-get update
+          apt-get install -y apache2-utils
+          DOWNLOAD_DIR=$(mktemp -d)
+          cd $DOWNLOAD_DIR
+          wget https://github.com/loadimpact/k6/releases/download/v0.20.0/k6-v0.20.0-linux64.tar.gz      
+          tar xvfz k6-v0.20.0-linux64.tar.gz
+          cp k6-v0.20.0-linux64/k6 /usr/local/bin
+          rm -rf $DOWNLOAD_DIR
+          gcloud beta runtime-config configs waiters create api-key-waiter --config-name {{ properties["config" ]}} --success-cardinality-path /success-api-key --success-cardinality-number 1 --timeout 600
+          APIKEY=$(gcloud beta runtime-config configs variables get-value apikey --config-name {{ properties["config"] }})
+          cat <<< '
+            import http from "k6/http";
+            import { check } from "k6";
+            const API_KEY = "'${APIKEY}'";
+            export let options = {
+              stages: [
+                  { duration: "30m", target: 1000 },
+                ]
+            };
+            export default function() {
+              let params = {
+                headers: { "X-API-KEY": API_KEY }
+              };
+                let res = http.get("http://$(ref.microgateway.networkInterfaces[0].networkIP):8000/test/v1", params);
+                check(res, {
+                    "status is 200": (r) => r.status === 200
+                });
+            };
+          ' > /tmp/script.js
+          chmod 755 /tmp/script.js
+    networkInterfaces:
+    - network: projects/{{ env["project"] }}/global/networks/default
+      # Access Config required to give the instance a public IP address
+      accessConfigs:
+      - name: External NAT
+        type: ONE_TO_ONE_NAT
+    serviceAccounts:
+    - email: default
+      scopes:
+      - https://www.googleapis.com/auth/cloud-platform
+      - https://www.googleapis.com/auth/cloudruntimeconfig
+    zone: {{ properties["zone"] }}
+    

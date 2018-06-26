@@ -1,0 +1,109 @@
+resources:
+- name: microgateway
+  type: compute.v1.instance
+  properties:
+    disks:
+      - deviceName: boot
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          sourceImage: projects/debian-cloud/global/images/family/debian-9
+          diskSizeGb: 10
+    machineType: zones/{{ properties["zone"] }}/machineTypes/{{ properties["machineType"] }}
+    metadata:
+      items:
+      - key: startup-script
+        value: |
+          #!/bin/bash
+          export HOME=/root
+          echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse
+          echo 1 > /proc/sys/net/ipv4/tcp_tw_recycle
+          gcloud components update -q
+          gcloud components install beta -q
+          apt-get update
+          apt-get install -y apt-transport-https
+          curl -sL https://deb.nodesource.com/setup_8.x | sudo -E bash -
+          apt-get update
+          apt-get install -y nodejs collectd jq git-core python-pip
+          cat <<< 'LoadPlugin disk
+          LoadPlugin df
+          LoadPlugin interface
+          LoadPlugin network
+          LoadPlugin users
+          LoadPlugin cpu
+          LoadPlugin entropy
+          LoadPlugin load
+          LoadPlugin memory
+          LoadPlugin swap
+          LoadPlugin uptime
+          LoadPlugin processes
+          LoadPlugin sensors
+          LoadPlugin exec
+          <Plugin network>
+          Server "$(ref.monitor.networkInterfaces[0].networkIP)" "25826"
+          </Plugin>' > /etc/collectd/collectd.conf
+          systemctl enable collectd.service
+          systemctl start collectd
+          sleep 30
+          gcloud beta runtime-config configs variables set success-collectd/done success --config-name {{ properties["config"] }}
+          npm install -g edgemicro pm2 apigeetool
+          gsutil cp {{ properties["credentialsFile"] }} apigee-credentials.txt.enc
+          gcloud kms decrypt --location=global --keyring={{ properties["keyring"] }} --key={{ properties["key"] }} --ciphertext-file=apigee-credentials.txt.enc --plaintext-file=apigee-credentials.txt
+          APIGEE_USERNAME=$(cat apigee-credentials.txt | cut -f1 -d":")  
+          APIGEE_PASSWORD=$(cat apigee-credentials.txt | cut -f2 -d":") 
+          rm apigee-credentials.txt*
+          OUTPUT_DIR=$(mktemp -d)
+          edgemicro init
+          git clone https://github.com/Gallore/yaml_cli
+          pushd yaml_cli
+          pip install .
+          popd
+          yaml_cli -i $HOME/.edgemicro/default.yaml -o $HOME/.edgemicro/default.yaml -b oauth:cacheKey true -b edgemicro:nodelay true -n edgemicro:max_connections 4000
+          edgemicro configure -o {{ properties["organization"] }} -e {{ properties["environment"] }} -u ${APIGEE_USERNAME} -p ${APIGEE_PASSWORD} > ${OUTPUT_DIR}/microgateway.log
+          KEY=$(cat ${OUTPUT_DIR}/microgateway.log | grep key:| cut -d':' -f2 | sed -e 's/^[ \t]*//')
+          SECRET=$(cat ${OUTPUT_DIR}/microgateway.log | grep secret:| cut -d':' -f2 | sed -e 's/^[ \t]*//')
+          rm -rf ${OUTPUT_DIR}  
+          mkdir apiproxy
+          mkdir apiproxy/proxies
+          mkdir apiproxy/targets
+          cat <<< '<APIProxy name="edgemicro_test-api-v1">
+            <Description>Edgemicro Test API (v1)</Description>
+          </APIProxy>' > apiproxy/edgemicro_test-api-v1.xml
+          cat <<< '<ProxyEndpoint name="default">
+            <HTTPProxyConnection>
+              <BasePath>/test/v1</BasePath>
+              <VirtualHost>default</VirtualHost>
+              <VirtualHost>secure</VirtualHost>
+            </HTTPProxyConnection>
+            <RouteRule name="default">
+              <TargetEndpoint>default</TargetEndpoint>
+            </RouteRule>
+          </ProxyEndpoint>' > apiproxy/proxies/default.xml
+          cat <<< '<TargetEndpoint name="default">
+            <HTTPTargetConnection>
+              <URL>http://$(ref.target.networkInterfaces[0].networkIP)</URL>
+            </HTTPTargetConnection>
+          </TargetEndpoint>' > apiproxy/targets/default.xml
+          apigeetool deployproxy -u ${APIGEE_USERNAME} -p ${APIGEE_PASSWORD} -o {{ properties["organization"] }} -e {{ properties["environment"] }} -n edgemicro_test-api-v1 -d .
+          apigeetool createDeveloper -u ${APIGEE_USERNAME} -p ${APIGEE_PASSWORD} -o {{ properties["organization"] }} --email john.doe@acme.com --userName john.doe --firstName John --lastName Doe
+          apigeetool createProduct -u ${APIGEE_USERNAME} -p ${APIGEE_PASSWORD} -o {{ properties["organization"] }} --productName EdgemicroTestProduct --proxies edgemicro_test-api-v1,edgemicro-auth
+          APIKEY=$(apigeetool createApp -u ${APIGEE_USERNAME} -p ${APIGEE_PASSWORD} -o {{ properties["organization"] }} --apiProducts EdgemicroTestProduct --email john.doe@acme.com --name EdgemicroTestApp${i} | jq  -r '.credentials[0].consumerKey')
+          gcloud beta runtime-config configs variables set apikey ${APIKEY} --config-name {{ properties["config"] }}
+          gcloud beta runtime-config configs variables set success-api-key/done success --config-name {{ properties["config"] }}
+          NODE_CLUSTER_SCHED_POLICY=none pm2 start edgemicro -- start -o {{ properties["organization"] }} -e {{ properties["environment"] }} -k ${KEY} -s ${SECRET}
+          pm2 startup
+          pm2 save
+    networkInterfaces:
+    - network: projects/{{ env["project"] }}/global/networks/default
+      # Access Config required to give the instance a public IP address
+      accessConfigs:
+      - name: External NAT
+        type: ONE_TO_ONE_NAT
+    serviceAccounts:
+    - email: default
+      scopes:
+      - https://www.googleapis.com/auth/cloud-platform
+      - https://www.googleapis.com/auth/devstorage.read_only
+      - https://www.googleapis.com/auth/cloudruntimeconfig
+    zone: {{ properties["zone"] }}
